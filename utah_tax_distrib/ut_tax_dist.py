@@ -14,10 +14,12 @@ Assumes the binary 'pdftotext' is in your $PATH
 
 Usage - parse existing PDFs:            ut_tax_dist.py
 Usage - download and then parse PDFs:   ut_tax_dist.py download
+Usage - parse existing textfiles:       ut_tax_dist.py textonly
 
 Send bugs to Mathew White <mathew.b.white@gmail.com>
 
-TODO: Fix assumption regarding column names (assumes every file is the same)
+Note that the CSV output includes all columns common to the entire dataset.
+If a column doesn't exist in a file, it is left blank.
 
 '''
 
@@ -31,13 +33,10 @@ import os.path
 import requests
 from bs4 import BeautifulSoup
 from subprocess import check_output
+from collections import defaultdict
 
-# Column Format
-cols = (
-    'jcode city tot_dist tot_ded fin_dist '
-    'bal_owe tot_paid bal_fwd'
-).split(' ')
-print(cols)
+# Common Columns
+comcols = ('YEAR MONTH TAXTYPE JCODE').split(' ')
 
 
 # Trim unwanted characters (leading/trailing spaces, commas, dollar-signs)
@@ -46,46 +45,111 @@ def trimit(v):
 
 
 # Convert a formatted line to an array
-def line2cols(line):
+def line2cols(y, m, tax, line, hcols):
     ary = list(re.match(
         (
-            r'^\s+(\d{5})'          # Jurisdiction Code
-            r'\s+([^\$]+)'          # City
-            r'([\$\d\,\.-]+)\s+'    # Tot Dist
-            r'([\$\d\,\.-]+)\s+'    # Tot Dec
-            r'([\$\d\,\.-]+)\s+'    # Fin Dist
-            r'([\$\d\,\.-]+)\s+'    # Bal Owe
-            r'([\$\d\,\.-]+)\s+'    # Tot Pay
-            r'([\$\d\,\.-]+)'       # Bal Fwd
+            r'^\s+(\d{5})'                              # Jurisdiction Code
+            + r'\s+([^\$\d]+)'                          # City
+            + r'([\$\d\,\.-]+)\s+' * (len(hcols) - 2)   # Middle Cols
+            + r'([\$\d\,\.-]+)'                         # Final Col
         ),
         line
-    ).group(*range(1, 9)))
-    return list(map(trimit, ary))
+    ).groups())
+    #).group(*range(1, len(hcols) + 3)))
+    return dict(zip(
+        comcols + hcols,
+        [y, m, tax] + list(map(trimit, ary))
+    ))
+
+
+# Parse header line
+def headparse(line):
+    cols = re.split(r'\s\s+', line)
+    if cols[1] == 'CITY':
+        cols = cols[2:]
+    elif cols[1] == 'PSAP':
+        cols = cols[1:]
+        cols[0] = 'LOCALITY'
+    elif cols[1] == 'TOTAL DISTRIB':
+        cols = ['LOCALITY'] + cols[1:]
+    else:
+        cols = cols[1:]
+
+    ret = []
+    for c in cols:
+        if c == 'TOTAL DISTRIB TOTAL DEDUCT':
+            ret += ['TOTAL DISTRIB', 'TOTAL DEDUCT']
+        elif c == 'CHARITABLE OTHER DEDUCT':
+            ret += ['CHARITABLE', 'OTHER DEDUCT']
+        elif c == 'FINAL DISTRIB BALANCE OWED':
+            ret += ['FINAL DISTRIB', 'BALANCE OWED']
+        elif c == 'INTER AGRMT FINAL DISTRIB BALANCE OWED':
+            ret += ['INTER AGRMT', 'FINAL DISTRIB', 'BALANCE OWED']
+        else:
+            ret += [c]
+
+    ret = [re.sub(r'\s', '_', x) for x in ret]
+
+    return ret
 
 
 # Parse all the given text files
 def parseit(txts):
     stor = []
+    col_place = defaultdict(int)    # Store the default placement of a header
+    col_count = defaultdict(int)    # Store the number of times a header is
+    colstats = {}                   # Put the columns in their "usual" order
     for t in txts:
         print("Processing %s" % t)
         (y, m, tax) = re.match(r'\./(\d\d)(\d\d)(.*)\.txt', t).group(1, 2, 3)
         y = '20' + y
         print("Year: %s Month: %s Tax: %s" % (y, m, tax))
+        headsentinel = 0
+        hcols = []
         with open(t, 'r') as file:
             for line in file:
+                line = line.rstrip()
+                if len(hcols) == 0:
+                    # If the line is a percursor header record,
+                    # set the flag to look for the header next
+                    if re.search(r'CNTY', line):
+                        headsentinel = 1
+
+                    # If the line is a header record, parse it as header
+                    if headsentinel == 1 and re.search(r'TOTAL', line):
+                        # Remove 'CNTY' since it isn't consistent
+                        line = re.sub(r'(CNTY /|CNTY/|CNTY)', '', line)
+                        hcols = headparse(line)
+                        for i, c in enumerate(hcols):
+                            col_count[c] += 1
+                            col_place[c] += i + 1
+
+                # If the line is a data record, parse it as data
                 if re.match(r'^\s+\d{5}', line):
-                    ary = line2cols(line)
-                    stor.append([y, m, tax] + ary)
-    return stor
+                    stor.append(line2cols(y, m, tax, line, hcols))
+
+    # Calculate the "order" of the headers
+    for k in col_place.keys():
+        colstats[k] = float(col_place[k]) / float(col_count[k])
+
+    return (stor, colstats)
 
 
 # Save all the parsed data
-def storeit(stor):
+def storeit(stor, colstats):
+    sk = sorted(colstats, key=lambda x: colstats[x])
     with open('ut_tax.csv', 'wb') as csvfile:
         wr = csv.writer(csvfile, quoting=csv.QUOTE_NONNUMERIC)
-        wr.writerow(['year', 'month', 'tax'] + cols)
+        wr.writerow(comcols + sk)
         for s in stor:
-            wr.writerow(s)
+            wrline = [s[x] for x in comcols]
+            for k in sk:
+                if k in s:
+                    wrline += [s[k]]
+                else:
+                    wrline += ['']
+
+            wr.writerow(wrline)
 
 
 # Get all the PDF files from the salestax PDF links on the give URL
@@ -128,15 +192,8 @@ def getfiles(url):
             time.sleep(3)
 
 
-if __name__ == '__main__':
-
-    # Assumes your current working directory contains the PDFs you wish to use
-    # See WARNING at top of script
-
-    # If the 'download' argument was given to this script, download the PDFs
-    if len(sys.argv) > 1 and sys.argv[1] == 'download':
-        getfiles('https://tax.utah.gov/sales/distribution')
-
+# Just parse the PDF files
+def do_pdfs():
     # Get PDF files
     pdfs = glob.glob('./*.pdf')
 
@@ -145,13 +202,31 @@ if __name__ == '__main__':
         check_output("pdftotext -layout %s" % p, shell=True)
         print("Processed %s" % p)
 
-    # Now that each PDF is processed, we have a lot of text files to process
 
+# Just parse the text files
+def do_text():
     # Get text files
     txts = glob.glob('./*.txt')
 
     # Parse the text files
-    stor = parseit(txts)
+    (stor, colstats) = parseit(txts)
 
     # Store the parsed data as CSV
-    storeit(stor)
+    storeit(stor, colstats)
+
+
+if __name__ == '__main__':
+
+    # Assumes your current working directory contains the PDFs you wish to use
+    # See WARNING at top of script
+
+    # If the 'download' argument was given to this script, download the PDFs
+    if len(sys.argv) > 1 and sys.argv[1] == 'download':
+        getfiles('https://tax.utah.gov/sales/distribution')
+    # If the 'textonly' argument was given, only parse the existing text
+    elif len(sys.argv) > 1 and sys.argv[1] == 'textonly':
+        do_text()
+    # Default: parse PDF files and parse the resulting text
+    else:
+        do_pdfs()
+        do_text()
