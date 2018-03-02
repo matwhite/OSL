@@ -116,6 +116,11 @@ def parseit(txts):
             for line in file:
                 line = line.rstrip()
 
+                # The 'shorttermleasing' files contain both taxes and revenues
+                # Ignore revenues and only record taxes
+                if tax == 'shorttermleasing' and re.search(r'REVENUES', line):
+                    break
+
                 # Verify the uniqueness of the line (after normalizing spaces)
                 # (sometimes pdftotext will duplicate a line at the top
                 #  or bottom of a page)
