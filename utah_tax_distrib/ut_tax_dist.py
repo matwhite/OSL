@@ -21,10 +21,15 @@ Send bugs to Mathew White <mathew.b.white@gmail.com>
 Note that the CSV output includes all columns common to the entire dataset.
 If a column doesn't exist in a file, it is left blank.
 
+Source data: https://tax.utah.gov/sales/distribution
+
+TODO: shorttermleasing has two reports in one document
+
 '''
 
 import re
 import csv
+import md5
 import sys
 import glob
 import time
@@ -101,6 +106,7 @@ def parseit(txts):
     colstats = {}                   # Put the columns in their "usual" order
     for t in txts:
         print("Processing %s" % t)
+        uniq = {}
         (y, m, tax) = re.match(r'\./(\d\d)(\d\d)(.*)\.txt', t).group(1, 2, 3)
         y = '20' + y
         print("Year: %s Month: %s Tax: %s" % (y, m, tax))
@@ -109,6 +115,20 @@ def parseit(txts):
         with open(t, 'r') as file:
             for line in file:
                 line = line.rstrip()
+
+                # Verify the uniqueness of the line (after normalizing spaces)
+                # (sometimes pdftotext will duplicate a line at the top
+                #  or bottom of a page)
+                vetted = line
+                while re.search(r'\s\s', vetted):
+                    vetted = re.sub(r'\s\s', ' ', vetted)
+                hh = md5.new(vetted).hexdigest()
+                if hh in uniq:
+                    continue
+                else:
+                    uniq[hh] = 1
+
+                # Move on if we have already successfully parsed a header
                 if len(hcols) == 0:
                     # If the line is a percursor header record,
                     # set the flag to look for the header next
