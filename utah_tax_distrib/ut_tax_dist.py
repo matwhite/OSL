@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 '''
 !!! WARNING !!!
@@ -22,8 +22,6 @@ Note that the CSV output includes all columns common to the entire dataset.
 If a column doesn't exist in a file, it is left blank.
 
 Source data: https://tax.utah.gov/sales/distribution
-
-TODO: shorttermleasing has two reports in one document
 
 '''
 
@@ -60,7 +58,6 @@ def line2cols(y, m, tax, line, hcols):
         ),
         line
     ).groups())
-    #).group(*range(1, len(hcols) + 3)))
     return dict(zip(
         comcols + hcols,
         [y, m, tax] + list(map(trimit, ary))
@@ -117,9 +114,12 @@ def parseit(txts):
                 line = line.rstrip()
 
                 # The 'shorttermleasing' files contain both taxes and revenues
-                # Ignore revenues and only record taxes
+                # Reset header and report name so second page is seen as a new
+                # report
                 if tax == 'shorttermleasing' and re.search(r'REVENUES', line):
-                    break
+                    hcols = []
+                    tax = tax + 'rev'
+                    continue
 
                 # Verify the uniqueness of the line (after normalizing spaces)
                 # (sometimes pdftotext will duplicate a line at the top
